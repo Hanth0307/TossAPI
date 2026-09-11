@@ -14,9 +14,15 @@ production.
   subclass) is the single source of truth for configuration. All
   fields have safe defaults or are `None` - nothing required is
   hardcoded.
-- Secrets (`toss_api_key`, `toss_api_secret`) are typed as
-  `pydantic.SecretStr`, so they never appear in `repr()`/logs by
-  accident; callers must explicitly call `.get_secret_value()`.
+- Secrets (`toss_client_id`, `toss_client_secret`, `toss_account_seq`)
+  are typed as `pydantic.SecretStr`, so they never appear in
+  `repr()`/logs by accident; callers must explicitly call
+  `.get_secret_value()`. (Phase 02 confirmed the OAuth2 Client
+  Credentials field names against the official docs and renamed
+  Phase 00's placeholder `toss_api_key`/`toss_api_secret` fields
+  accordingly - see ADR 0007. `toss_account_seq` is an account
+  identifier, not a credential, but is treated the same way since the
+  official docs call out never logging it.)
 - `APP_ENV` (`dev` | `test` | `prod`, `app.core.config.Environment`)
   selects the running environment. Settings are loaded from a local
   `.env` file (via `pydantic-settings`' built-in support), which is

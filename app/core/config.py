@@ -39,12 +39,17 @@ class Settings(BaseSettings):
 
     database_url: str | None = None
 
-    # Base URL and field names are intentionally left unset - do not
-    # assume a value here. Verify against the official Toss API docs
-    # / real responses before any adapter depends on them.
-    toss_api_base_url: str | None = None
-    toss_api_key: SecretStr | None = None
-    toss_api_secret: SecretStr | None = None
+    # Confirmed against the official Toss Open API docs (Phase 02):
+    # OAuth 2.0 Client Credentials Grant, POST /oauth2/token, base URL
+    # https://openapi.tossinvest.com. Credentials themselves are never
+    # defaulted - only the base URL, which is public information.
+    toss_api_base_url: str = "https://openapi.tossinvest.com"
+    toss_client_id: SecretStr | None = None
+    toss_client_secret: SecretStr | None = None
+    # X-Tossinvest-Account header value for account/asset/order-read
+    # calls. Treated as a secret (never logged) even though it is an
+    # identifier rather than a credential - see ADR 0007.
+    toss_account_seq: SecretStr | None = None
 
     http_timeout_seconds: float = 10.0
     http_max_retries: int = 3
@@ -52,6 +57,13 @@ class Settings(BaseSettings):
     # Hard safety default. Must stay True until a reviewed live-broker
     # adapter exists; Phase 00 ships no order-placing code at all.
     paper_trading_only: bool = True
+
+    # Code-level gate for Phase 02: the Toss adapters refuse to
+    # construct at all unless this is True. There is no order-placing
+    # code anywhere in app.toss regardless - this flag exists so a
+    # future phase must make one deliberate, reviewable change to even
+    # begin adding one. See ADR 0007.
+    toss_read_only_mode: bool = True
 
 
 @lru_cache

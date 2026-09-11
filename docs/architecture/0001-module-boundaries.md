@@ -28,6 +28,7 @@ brokers     -> core, adapters
 risk        -> core, brokers        (only for the OrderRequest type)
 execution   -> core, brokers, risk
 research    -> core                 (added Phase 01, see ADR 0006)
+toss        -> core, adapters       (added Phase 02, see ADR 0007)
 ```
 
 Rules:
@@ -46,6 +47,11 @@ Rules:
   `brokers`/`risk`/`execution` - a strategy research artifact
   (`StrategySpec`) can never be one import away from placing an order.
   See ADR 0006.
+- `toss` (the concrete Toss Open API integration) depends on `core`
+  and `adapters` only, and specifically never on `research` - a Toss
+  API outage cannot affect strategy research, and a TradingView MCP
+  outage (ADR 0006) cannot affect this gateway. `toss` also has no
+  order-mutating capability at all: see ADR 0007.
 - Each package's `__init__.py` states its allowed dependencies in a
   docstring, so the boundary is visible from the file itself.
 

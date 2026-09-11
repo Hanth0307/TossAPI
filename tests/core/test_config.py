@@ -13,7 +13,9 @@ def test_settings_default_env_file_only(tmp_path, monkeypatch: pytest.MonkeyPatc
     settings = Settings(_env_file=None)
     assert settings.app_env == Environment.DEV
     assert settings.paper_trading_only is True
-    assert settings.toss_api_key is None
+    assert settings.toss_read_only_mode is True
+    assert settings.toss_client_id is None
+    assert settings.toss_api_base_url == "https://openapi.tossinvest.com"
 
 
 def test_settings_reads_app_env_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -23,11 +25,11 @@ def test_settings_reads_app_env_from_environment(monkeypatch: pytest.MonkeyPatch
 
 
 def test_settings_secret_not_exposed_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TOSS_API_KEY", "super-secret-value")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "super-secret-value")
     settings = Settings(_env_file=None)
     assert "super-secret-value" not in repr(settings)
-    assert settings.toss_api_key is not None
-    assert settings.toss_api_key.get_secret_value() == "super-secret-value"
+    assert settings.toss_client_secret is not None
+    assert settings.toss_client_secret.get_secret_value() == "super-secret-value"
 
 
 def test_get_settings_is_cached() -> None:

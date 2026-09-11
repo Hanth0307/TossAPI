@@ -21,6 +21,17 @@ a file-based Strategy Registry (`app/research`). See
 TradingView output is never auto-approved and still cannot reach a
 real order - `app/brokers`/`app/execution` remain interface-only.
 
+**Phase 02: Toss Open API integration (read-only).** `app/toss`
+connects to the real Toss Open API as a Market Data Gateway
+(`/api/v1/{prices,orderbook,trades,price-limits,candles,stocks}`) and
+a Portfolio Read Gateway (`/api/v1/{accounts,holdings,orders,
+buying-power,sellable-quantity,commissions}`). OAuth2 Client
+Credentials auth, per-endpoint rate limiting, and precise 401/403/429/
+5xx error mapping are all real; there is no order-placing code
+anywhere - `TossRestClient` has no HTTP verb but `get()`, and
+`Settings.toss_read_only_mode` gates construction. See
+`docs/architecture/0007-toss-api-integration.md`.
+
 ## Module map and dependency direction
 
 ```
@@ -35,6 +46,7 @@ brokers     -> core, adapters
 risk        -> core, brokers        (OrderRequest type only)
 execution   -> core, brokers, risk
 research    -> core                 (Phase 01, see ADR 0006)
+toss        -> core, adapters       (Phase 02, see ADR 0007)
 ```
 
 | Package | Responsibility |
@@ -50,6 +62,7 @@ research    -> core                 (Phase 01, see ADR 0006)
 | `app/risk` | Risk engine interface - gates every order before a broker sees it |
 | `app/execution` | Orchestrates risk check + broker submission for one order |
 | `app/research` | Strategy Research Lab: `StrategySpec` model, file-based Strategy Registry, isolated TradingView MCP health check |
+| `app/toss` | Toss Open API integration: OAuth2 client, `MarketDataAdapter`, `PortfolioReadAdapter` - read-only, no order-placing code |
 
 See `docs/architecture/` for the design decisions (ADRs) behind this
 structure, in particular:
@@ -63,6 +76,9 @@ structure, in particular:
 - `0005-testing-and-tooling.md` - pytest/ruff/mypy setup
 - `0006-strategy-research-lab.md` - `StrategySpec`, the status ladder,
   and why TradingView MCP is isolated from the rest of the system
+- `0007-toss-api-integration.md` - the confirmed Toss Open API spec
+  used, raw-vs-normalized model split, error mapping, rate limiting,
+  and the code-level read-only enforcement
 
 ## Setup
 
@@ -112,6 +128,12 @@ local infrastructure for when a persistence layer is added.
 - No API response field name in this codebase is guessed. Provider
   interfaces in `app/data/base.py` return untyped payloads on purpose,
   pending verification against each real API's actual responses.
+- `app/toss` (Phase 02) never places, modifies, or cancels an order:
+  `TossRestClient` exposes only `get()`, and construction fails
+  immediately unless `Settings.toss_read_only_mode` (default `true`)
+  is set - see ADR 0007. `TOSS_CLIENT_ID`/`TOSS_CLIENT_SECRET`/
+  `TOSS_ACCOUNT_SEQ` are never hardcoded or logged (`pydantic.SecretStr`
+  end to end; see `tests/toss/test_secret_redaction.py`).
 
 ## Strategy Research Lab (Phase 01)
 
@@ -125,13 +147,36 @@ to run one live. See:
 - `research/strategies/STR-EXT-001/0.1.0.json` - a sample external
   strategy idea, registered at `status=research` only
 
+## Toss Open API integration (Phase 02)
+
+Read-only. See:
+- `docs/architecture/0007-toss-api-integration.md` - what was
+  confirmed against the official docs vs. inferred, and why
+- `app/toss/factory.py::build_toss_gateways(settings)` - wires
+  `Settings` into a `MarketDataAdapter`/`PortfolioReadAdapter` pair
+- `tests/toss/test_integration_live.py` - the opt-in (real-credential)
+  integration test, skipped by default and in this environment always
+  skipped (network access to `*.tossinvest.com` is blocked here - see
+  ADR 0007)
+
+```python
+from app.core.config import get_settings
+from app.toss.factory import build_toss_gateways
+
+gateways = build_toss_gateways(get_settings())
+quote = gateways.market_data.get_price("005930")
+```
+
 ## Roadmap
 
 - **Phase 00 (done)**: project skeleton - config, logging, exceptions,
   HTTP timeout/retry policy, module interfaces, tests, tooling.
 - **Phase 01 (done)**: Strategy Research Lab - `StrategySpec`, file-
   based Strategy Registry, isolated TradingView MCP health check.
-- **Phase 02+**: concrete Toss API adapter (read-only endpoints
-  first), a paper broker implementation, a first scanner, and a first
-  backtest engine implementation - each phase should only need to fill
-  in a `base.py` interface defined here, not change these boundaries.
+- **Phase 02 (done)**: Toss Open API integration - OAuth2 auth,
+  Market Data Gateway, Portfolio Read Gateway, all read-only.
+- **Phase 03+**: a paper broker implementation, a first scanner, and a
+  first backtest engine implementation, plus confirming the remaining
+  9 endpoints' response schemas - each phase should only need to fill
+  in a `base.py` interface (or add a DTO under `app/toss/dto.py`), not
+  change these boundaries.

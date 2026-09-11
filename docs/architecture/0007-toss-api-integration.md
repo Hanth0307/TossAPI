@@ -29,13 +29,36 @@ information - nothing beyond it was guessed.
 (`grant_type=client_credentials`, form-encoded `client_id`/
 `client_secret`), caches the token in memory, and refetches when
 within `expiry_leeway_seconds` (default 30s) of expiry or when
-`invalidate()` is called (used after a 401). The token *response*
-JSON schema was not shown in the provided spec; `app/toss/dto.py`'s
-`TokenResponseDto` uses the three fields RFC 6749 §5.1 defines for
-this exact grant type (`access_token`, `token_type`, `expires_in`) -
-relying on the standard the docs say this endpoint implements, not a
-guessed Toss-proprietary shape. A missing/malformed field raises
-`DataValidationError` rather than assuming a default.
+`invalidate()` is called (used after a 401).
+
+**The token *response* JSON schema itself was never confirmed** - the
+provided spec confirmed the grant type and the request shape, not a
+response example. Using OAuth 2.0 Client Credentials and returning
+`{"access_token": ..., "expires_in": ...}` are two different claims;
+only the first is confirmed. `app/toss/token_parser.py` makes this
+explicit rather than presenting the second as fact:
+- `ProvisionalTokenResponseDto` (`access_token`, `expires_in`) is
+  labeled, in its own docstring, a **provisional adapter assumption**
+  based on the RFC 6749 §5.1 standard response for this grant type -
+  not a confirmed Toss schema.
+- `TOKEN_RESPONSE_SCHEMA_VERIFIED = False` records that state
+  explicitly; it is only ever flipped to `True` alongside real
+  evidence (an observed response body), in the same change that
+  updates this ADR.
+- Parsing is fail-closed: a response that doesn't match raises
+  `DataValidationError` immediately - `TossOAuthClient` never falls
+  back to a default or returns a partially-built token
+  (`tests/toss/test_token_parser.py::test_unexpected_token_response_shape_fails_closed`).
+  The raised message never includes the raw response body or any
+  parsed field value, so a token/secret-looking value in an
+  unexpected field of a malformed response cannot leak through it
+  (`test_token_parsing_failure_never_leaks_response_body_or_secrets`).
+- The parser is isolated behind the `TokenResponseParser` protocol and
+  injected into `TossOAuthClient` (`token_parser=`) rather than
+  hardcoded - `TossOAuthClient` never sees a JSON field name. Once a
+  real response is observed, only `app/toss/token_parser.py` needs to
+  change (correct the DTO, flip the verified flag); `TossOAuthClient`
+  and every caller are untouched.
 
 ### Raw DTO vs. normalized domain model split
 `app/toss/dto.py` holds one pydantic model per endpoint whose JSON was
@@ -150,15 +173,33 @@ TradingView-outage isolation proof from Phase 01. A Toss API outage
 therefore cannot affect strategy research, and a TradingView MCP
 outage cannot affect this gateway.
 
-### No WebSocket client
-The provided spec states the official docs read "현재 REST API만
-제공합니다" / "웹 소켓은 추후 지원 예정입니다" - real-time streaming is
-not yet available. No WebSocket client, URL, protocol, or message
-schema is defined anywhere in this codebase; inventing one would be
+### WebSocket: marketing-confirmed, protocol unverified, deferred
+An earlier draft of this ADR stated the official docs read "REST
+API만 제공합니다" (REST-only) based on the spec available at the time.
+That was corrected: the official Toss Securities Open API introduction
+page does state both REST and WebSocket are offered. What remains
+unconfirmed is everything needed to actually implement a client
+against it - no WebSocket URL, authentication method, subscribe/
+unsubscribe protocol, message envelope, heartbeat mechanism, reconnect
+policy, or rate/subscription limit has been shown. Status, recorded
+explicitly rather than left ambiguous:
+
+```
+Capability:     OFFICIAL_MARKETING_CONFIRMED
+Protocol:       NOT_VERIFIED
+Implementation: DEFERRED
+```
+
+No WebSocket client, URL, or message schema is defined anywhere in
+this codebase - inventing one from the protocol details alone would be
 exactly the kind of unconfirmed-contract guess this phase forbids.
-`MarketDataAdapter` is REST-polling only. A future
-`StreamingMarketDataProvider`-shaped interface can be added once Toss
-publishes a real WebSocket contract to verify against.
+`tests/toss/test_no_websocket_implementation.py` statically confirms
+no such class/URL exists yet (`ast`-based, mirroring the other
+structural proofs in this package). `MarketDataAdapter` is
+REST-polling only for Phase 02. A future `StreamingMarketDataProvider`
+-shaped interface can be added once a real protocol document is
+available to verify URL/auth/message-format/heartbeat/reconnect
+behavior against - not before.
 
 ## Consequences
 - Every Phase 02 test runs against `httpx.MockTransport` fixtures -
@@ -178,3 +219,11 @@ publishes a real WebSocket contract to verify against.
   and using its (real) responses to add DTOs for the 9 remaining
   endpoints - no restructuring needed, just additive DTOs/models
   following the same raw-vs-normalized split.
+- The same applies to the OAuth token response: a real observed body
+  either confirms `ProvisionalTokenResponseDto` as-is (flip
+  `TOKEN_RESPONSE_SCHEMA_VERIFIED` to `True`) or shows it needs
+  correcting - either way, only `app/toss/token_parser.py` changes.
+- WebSocket implementation is fully deferred pending an actual
+  protocol document (URL/auth/message format/heartbeat/reconnect) -
+  see the status block above. This is not scheduled by this ADR; it
+  starts only once that document exists to verify against.

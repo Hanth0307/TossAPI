@@ -2,13 +2,22 @@
 
 Confirmed official GET endpoints only:
 `/api/v1/prices`, `/api/v1/orderbook`, `/api/v1/trades`,
-`/api/v1/price-limits`, `/api/v1/candles`, `/api/v1/stocks`. No
-WebSocket client exists here - the official docs state real-time
-streaming is not yet available ("현재 REST API만 제공합니다");
-`app.research`'s `StreamingMarketDataProvider`-shaped interface is
-intentionally *not* pre-defined with a guessed URL/protocol, per the
-instruction not to invent an unconfirmed connection contract. This
+`/api/v1/price-limits`, `/api/v1/candles`, `/api/v1/stocks`. This
 adapter is REST-polling only.
+
+WebSocket status (see docs/architecture/0007-toss-api-integration.md):
+    Capability:     OFFICIAL_MARKETING_CONFIRMED
+    Protocol:       NOT_VERIFIED
+    Implementation: DEFERRED
+
+The official Toss Securities Open API introduction states both REST
+and WebSocket are offered, but no WebSocket URL, auth method,
+subscribe/unsubscribe protocol, message envelope, heartbeat, or
+reconnect policy has been confirmed. No WebSocket client, URL, or
+message schema is defined anywhere in this codebase - inventing one
+would be exactly the kind of unconfirmed-contract guess this phase
+forbids. A `StreamingMarketDataProvider`-shaped interface can be added
+once a real protocol document is available to verify against.
 """
 
 from __future__ import annotations

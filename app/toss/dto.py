@@ -11,6 +11,12 @@ sellable-quantity, commissions) have no DTO here on purpose - see
 `RawEnvelopeDto` and `app/toss/models.py::UnparsedRecord`. Inventing
 field names for them would violate the "never guess an unconfirmed
 response field" rule for this phase.
+
+The OAuth token response DTO is **not** here - see
+`app/toss/token_parser.py`. Unlike every DTO below, its fields were
+never shown in an official example; it lives in its own module,
+explicitly marked provisional/unverified, so it cannot be mistaken for
+a confirmed schema alongside these.
 """
 
 from __future__ import annotations
@@ -107,20 +113,3 @@ class RawEnvelopeDto(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     result: Any
-
-
-class TokenResponseDto(BaseModel):
-    """OAuth 2.0 Client Credentials token response.
-
-    The official docs confirm the grant type (client_credentials) and
-    request shape but did not show a response JSON example. These
-    three fields are the RFC 6749 §5.1 standard response for this
-    grant type, which the docs say Toss implements - not a guessed
-    Toss-proprietary field. See ADR 0007.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    access_token: str
-    token_type: str | None = None
-    expires_in: int

@@ -19,5 +19,13 @@ Toss Open API docs (base URL, auth flow, endpoint paths). Response
 available (current price, orderbook, trades, candles) - see
 `app/toss/dto.py` and ADR 0007 for exactly which endpoints fall back
 to an opaque, raw-preserving `UnparsedRecord` pending confirmed
-field names.
+field names. The OAuth token response is a special case of this: its
+fields were never shown either, so parsing it is isolated behind a
+swappable, explicitly-provisional boundary - see
+`app/toss/token_parser.py`.
+
+No WebSocket client exists here. The official docs confirm Toss
+offers one but no protocol detail (URL, auth, message envelope,
+heartbeat, reconnect policy) has been verified - see the WebSocket
+status block in `app/toss/market_data.py` and ADR 0007.
 """

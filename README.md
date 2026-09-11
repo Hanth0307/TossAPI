@@ -25,11 +25,18 @@ real order - `app/brokers`/`app/execution` remain interface-only.
 connects to the real Toss Open API as a Market Data Gateway
 (`/api/v1/{prices,orderbook,trades,price-limits,candles,stocks}`) and
 a Portfolio Read Gateway (`/api/v1/{accounts,holdings,orders,
-buying-power,sellable-quantity,commissions}`). OAuth2 Client
-Credentials auth, per-endpoint rate limiting, and precise 401/403/429/
-5xx error mapping are all real; there is no order-placing code
-anywhere - `TossRestClient` has no HTTP verb but `get()`, and
-`Settings.toss_read_only_mode` gates construction. See
+buying-power,sellable-quantity,commissions}`). The OAuth2 Client
+Credentials *request*, per-endpoint rate limiting, and precise
+401/403/429/5xx error mapping are all confirmed against the official
+docs; the OAuth token *response* JSON schema was never shown and is
+treated as an explicitly provisional/unverified adapter assumption,
+isolated behind a swappable parser (`app/toss/token_parser.py`) that
+fails closed on a mismatch. There is no order-placing code anywhere -
+`TossRestClient` has no HTTP verb but `get()`, and
+`Settings.toss_read_only_mode` gates construction. Toss also offers a
+WebSocket API per its own marketing page, but no protocol detail has
+been verified, so none is implemented (see status block in
+`app/toss/market_data.py`). See
 `docs/architecture/0007-toss-api-integration.md`.
 
 ## Module map and dependency direction

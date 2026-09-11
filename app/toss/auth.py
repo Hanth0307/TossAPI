@@ -3,9 +3,12 @@
 Confirmed by the official docs: `POST /oauth2/token`,
 `Content-Type: application/x-www-form-urlencoded`, body
 `grant_type=client_credentials&client_id=...&client_secret=...`. The
-token response JSON schema itself was not shown - see
-`app.toss.dto.TokenResponseDto` for why RFC 6749's standard fields are
-used instead of a guessed Toss-specific shape.
+token *response* JSON schema itself was never shown - parsing it is
+delegated entirely to `app.toss.token_parser`, whose docstring
+explains why this is a provisional, unverified adapter assumption and
+not a confirmed Toss schema. This class knows nothing about response
+field names; that isolation means the parser can be corrected once a
+real response is observed without touching anything here.
 
 `client_id`/`client_secret` are never logged, and neither is the
 issued access token - see `tests/toss/test_secret_redaction.py`.
@@ -18,14 +21,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from app.adapters.http_client import BaseApiClient, RetryPolicy
-from app.core.exceptions import DataValidationError
 from app.toss._retry import send_with_status_retry
-from app.toss.dto import TokenResponseDto
 from app.toss.error_mapping import raise_for_status
 from app.toss.rate_limit import GroupThrottle, RateLimitGroup
+from app.toss.token_parser import ProvisionalTokenResponseParser, TokenResponseParser
 
 TOKEN_PATH = "/oauth2/token"
 
@@ -52,6 +54,7 @@ class TossOAuthClient:
         sleep_fn: Callable[[float], None] = time.sleep,
         throttle: GroupThrottle | None = None,
         http_client: BaseApiClient | None = None,
+        token_parser: TokenResponseParser | None = None,
     ) -> None:
         self._client_id = client_id
         self._client_secret = client_secret
@@ -62,6 +65,7 @@ class TossOAuthClient:
         self._clock = clock
         self._sleep_fn = sleep_fn
         self._throttle = throttle or GroupThrottle()
+        self._token_parser = token_parser or ProvisionalTokenResponseParser()
         self._http = http_client or BaseApiClient(
             base_url=base_url,
             policy=RetryPolicy(
@@ -107,17 +111,6 @@ class TossOAuthClient:
         )
         raise_for_status(response, context="POST /oauth2/token")
 
-        try:
-            token_dto = TokenResponseDto.model_validate_json(response.content)
-        except ValidationError as exc:
-            # Deliberately not including exc's repr in the message: pydantic
-            # error reprs do not echo input values for missing fields, but
-            # keep this defensive rather than assuming that in all pydantic
-            # versions.
-            raise DataValidationError(
-                "Toss token response did not match the expected OAuth2 shape "
-                "(access_token/expires_in) - see app/toss/dto.py::TokenResponseDto"
-            ) from exc
-
-        expires_at = self._clock() + timedelta(seconds=token_dto.expires_in)
-        return AccessToken(value=token_dto.access_token, expires_at=expires_at)
+        parsed = self._token_parser.parse(response.content)
+        expires_at = self._clock() + timedelta(seconds=parsed.expires_in)
+        return AccessToken(value=parsed.access_token, expires_at=expires_at)

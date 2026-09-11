@@ -5,12 +5,21 @@ Investment Open API integration, news/DART ingestion, market scanners,
 AI/quant signal models, backtesting, a paper broker, a risk engine,
 and order execution.
 
-**Phase 00 (this phase): project skeleton only.** No trading strategy,
-AI model, or live order-placing code is implemented. Everything under
+**Phase 00: project skeleton.** No trading strategy, AI model, or live
+order-placing code is implemented. Everything under
 `app/{scanners,models,strategies,backtest,brokers,risk,execution}` is
 an interface (`base.py`, `abc.ABC`) with no concrete logic yet, so
 later phases can build on stable module boundaries without having to
 rewrite this scaffolding.
+
+**Phase 01: Strategy Research Lab.** TradingView (+ Claude MCP) is
+used strictly as a research tool - never as a live trading engine.
+Strategy ideas are recorded as reproducible `StrategySpec` records in
+a file-based Strategy Registry (`app/research`). See
+`docs/research/strategy-research-lab-guide.md` for usage and
+`docs/architecture/0006-strategy-research-lab.md` for the design.
+TradingView output is never auto-approved and still cannot reach a
+real order - `app/brokers`/`app/execution` remain interface-only.
 
 ## Module map and dependency direction
 
@@ -25,6 +34,7 @@ backtest    -> core, data, strategies
 brokers     -> core, adapters
 risk        -> core, brokers        (OrderRequest type only)
 execution   -> core, brokers, risk
+research    -> core                 (Phase 01, see ADR 0006)
 ```
 
 | Package | Responsibility |
@@ -39,6 +49,7 @@ execution   -> core, brokers, risk
 | `app/brokers` | Broker adapter interface (paper/live) - no real order calls |
 | `app/risk` | Risk engine interface - gates every order before a broker sees it |
 | `app/execution` | Orchestrates risk check + broker submission for one order |
+| `app/research` | Strategy Research Lab: `StrategySpec` model, file-based Strategy Registry, isolated TradingView MCP health check |
 
 See `docs/architecture/` for the design decisions (ADRs) behind this
 structure, in particular:
@@ -50,6 +61,8 @@ structure, in particular:
 - `0004-external-api-timeout-retry-policy.md` - **why order calls use
   a separate, non-retrying policy**
 - `0005-testing-and-tooling.md` - pytest/ruff/mypy setup
+- `0006-strategy-research-lab.md` - `StrategySpec`, the status ladder,
+  and why TradingView MCP is isolated from the rest of the system
 
 ## Setup
 
@@ -100,11 +113,25 @@ local infrastructure for when a persistence layer is added.
   interfaces in `app/data/base.py` return untyped payloads on purpose,
   pending verification against each real API's actual responses.
 
+## Strategy Research Lab (Phase 01)
+
+TradingView + Claude MCP are used only to research strategies, never
+to run one live. See:
+- `docs/research/strategy-research-lab-guide.md` - how to create,
+  save, and reload a `StrategySpec`
+- `docs/research/tradingview-mcp-health-check.md` - manual procedure
+  for checking TradingView MCP connectivity (never a prerequisite for
+  `make test` or anything else in this repo)
+- `research/strategies/STR-EXT-001/0.1.0.json` - a sample external
+  strategy idea, registered at `status=research` only
+
 ## Roadmap
 
-- **Phase 00 (done)**: this skeleton - config, logging, exceptions,
+- **Phase 00 (done)**: project skeleton - config, logging, exceptions,
   HTTP timeout/retry policy, module interfaces, tests, tooling.
-- **Phase 01+**: concrete Toss API adapter (read-only endpoints
+- **Phase 01 (done)**: Strategy Research Lab - `StrategySpec`, file-
+  based Strategy Registry, isolated TradingView MCP health check.
+- **Phase 02+**: concrete Toss API adapter (read-only endpoints
   first), a paper broker implementation, a first scanner, and a first
   backtest engine implementation - each phase should only need to fill
   in a `base.py` interface defined here, not change these boundaries.

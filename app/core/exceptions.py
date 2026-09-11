@@ -64,3 +64,20 @@ class BrokerError(OrderError):
 
 class BacktestError(AppError):
     """Invalid backtest configuration or a failure during a backtest run."""
+
+
+class ResearchError(AppError):
+    """Base class for Strategy Research Lab (`app.research`) errors."""
+
+
+class StrategyVersionExistsError(ResearchError):
+    """A spec for this (strategy_id, version) already exists in the registry.
+
+    The Strategy Registry is append-only by default so a saved
+    research result stays reproducible - pass `overwrite=True` to
+    `StrategyRegistry.save()` if replacing it is genuinely intended.
+    """
+
+
+class StrategyNotFoundError(ResearchError):
+    """No spec was found for the requested strategy_id/version."""

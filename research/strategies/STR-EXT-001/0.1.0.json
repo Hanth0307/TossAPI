@@ -1,0 +1,24 @@
+{
+  "strategy_id": "STR-EXT-001",
+  "name": "External Trend Join Long (sample)",
+  "version": "0.1.0",
+  "source": "external",
+  "hypothesis": "외부 커뮤니티에서 공유된 'Trend Join Long' 아이디어를 그대로 옮겨 적은 예시: 복수의 추세 지표(예: 이동평균군)가 동시에 상승 정렬될 때 롱 진입하면 추세 추종 구간에서 초과 성과를 얻을 수 있다는 가설. 원본 Pine 스크립트/작성자를 아직 검증하지 않았으므로, 아래 entry_rules/exit_rules는 실제 스크립트를 확인하기 전까지의 플레이스홀더다. Pine 1차 검증 단계에서 실제 조건으로 갱신해야 한다.",
+  "universe": [
+    "KOSPI:005930"
+  ],
+  "timeframe": "1D",
+  "entry_rules": [
+    "PLACEHOLDER: 복수 추세 지표가 동시에 상승 정렬될 때 진입 후보로 표시 (원본 Pine 스크립트 확인 후 구체적 조건으로 대체 필요)"
+  ],
+  "exit_rules": [
+    "PLACEHOLDER: 추세 정렬이 붕괴되거나 사전 정의된 손절/익절 조건 충족 시 청산 (원본 Pine 스크립트 확인 후 구체적 조건으로 대체 필요)"
+  ],
+  "risk_assumptions": [
+    "PLACEHOLDER: 포지션 크기/손절폭 등 리스크 파라미터는 원본 소스 미검증 상태이며 Pine 1차 검증 단계에서 확정 예정",
+    "실거래 자금은 전혀 투입되지 않음 - 이 레코드는 연구/검증 단계 기록 전용이며, Pine 결과만으로 곧바로 실전 전략(approved)으로 승격하지 않는다"
+  ],
+  "created_at": "2026-09-11T14:32:22.801327Z",
+  "status": "research",
+  "pine_validation": null
+}

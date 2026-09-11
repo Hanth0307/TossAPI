@@ -27,6 +27,7 @@ backtest    -> core, data, strategies
 brokers     -> core, adapters
 risk        -> core, brokers        (only for the OrderRequest type)
 execution   -> core, brokers, risk
+research    -> core                 (added Phase 01, see ADR 0006)
 ```
 
 Rules:
@@ -41,6 +42,10 @@ Rules:
   `brokers` together; this is what enforces "every order passes risk
   checks before reaching a broker" as a structural property, not just
   a convention.
+- `research` depends on `core` only, and specifically never on
+  `brokers`/`risk`/`execution` - a strategy research artifact
+  (`StrategySpec`) can never be one import away from placing an order.
+  See ADR 0006.
 - Each package's `__init__.py` states its allowed dependencies in a
   docstring, so the boundary is visible from the file itself.
 

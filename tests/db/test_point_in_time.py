@@ -110,12 +110,13 @@ def test_as_of_cutoff_never_leaks_future_bars_into_a_training_style_query(
 def test_a_later_correction_does_not_retroactively_change_an_earlier_as_of_answer(
     migrated_schema, db_session
 ) -> None:
-    """A bar corrected well after the fact must not appear (with its
-    corrected value) for an as_of cutoff before the correction even
-    happened, EXCEPT for the documented simplification that
-    available_at is preserved as first-seen (see ADR 0008/0009): the
-    row's *presence* for that as_of is still governed by its original
-    available_at, which is what this test locks in.
+    """A bar corrected well after the fact must NOT appear (with its
+    corrected value) for an as_of cutoff before the correction actually
+    happened - this is the future-correction-leakage guarantee. See
+    tests/db/test_point_in_time_correction.py for the full dedicated
+    regression suite (the exact scenario from ADR 0009) and
+    `app.db.upsert.append_revision_rows` for how it is enforced (a
+    correction is a new revision row, never an in-place overwrite).
     """
     instrument = InstrumentRepository(db_session).get_or_create(
         exchange="KRX", symbol="005930", source="toss_openapi"
@@ -136,8 +137,8 @@ def test_a_later_correction_does_not_retroactively_change_an_earlier_as_of_answe
     assert len(result_before_correction) == 1
     assert result_before_correction[0].close_price == Decimal("100")
 
-    # A correction arrives much later with a new available_at - but the
-    # row's available_at is preserved as the ORIGINAL first-seen time.
+    # A correction arrives much later with a new available_at - appended
+    # as a new revision, the original row is untouched.
     later_correction = {
         **_bar(instrument.id, 1, 10, "999"),
         "available_at": original_available_at + timedelta(days=5),
@@ -145,15 +146,26 @@ def test_a_later_correction_does_not_retroactively_change_an_earlier_as_of_answe
     }
     bars_repo.upsert_bars([later_correction])
 
-    # Querying with the SAME as_of as before now returns the corrected
-    # value, because available_at was not overwritten - this is the
-    # documented simplification (not full bi-temporal versioning).
-    result_after_correction = bars_repo.get_bars_as_of(
+    # Querying with the SAME as_of as before must still return the
+    # ORIGINAL value - the correction's available_at is in the future
+    # relative to this as_of, so it must not leak in.
+    result_still_before_correction = bars_repo.get_bars_as_of(
         instrument_id=instrument.id,
         timeframe="1d",
         start=BASE,
         end=BASE + 10 * DAY,
         as_of=as_of_between_original_and_correction,
+    )
+    assert len(result_still_before_correction) == 1
+    assert result_still_before_correction[0].close_price == Decimal("100")
+
+    # An as_of after the correction's available_at sees the correction.
+    result_after_correction = bars_repo.get_bars_as_of(
+        instrument_id=instrument.id,
+        timeframe="1d",
+        start=BASE,
+        end=BASE + 10 * DAY,
+        as_of=original_available_at + timedelta(days=6),
     )
     assert len(result_after_correction) == 1
     assert result_after_correction[0].close_price == Decimal("999")

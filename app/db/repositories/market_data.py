@@ -17,8 +17,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.db.repositories._revisions import select_latest_revision_as_of
 from app.db.schema import instruments, market_bars, orderbook_snapshots, trade_ticks
-from app.db.upsert import upsert_event_rows
+from app.db.upsert import append_revision_rows, upsert_event_rows
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class MarketBarRow:
     event_time: datetime
     available_at: datetime
     ingested_at: datetime
+    revision: int
     open_price: Decimal
     high_price: Decimal
     low_price: Decimal
@@ -111,23 +113,21 @@ class InstrumentRepository:
 
 
 class MarketBarRepository:
+    """Corrections are a real occurrence for reported prices, so bars
+    use the append-only revision pattern - see `app.db.upsert.
+    append_revision_rows` / `app.db.repositories._revisions` and ADR
+    0009. `upsert_bars` never overwrites a prior revision's values.
+    """
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
     def upsert_bars(self, bars: Sequence[Mapping[str, Any]]) -> int:
-        return upsert_event_rows(
+        return append_revision_rows(
             self._session,
             market_bars,
             bars,
-            natural_key_columns=["instrument_id", "timeframe", "event_time", "source"],
-            update_columns=[
-                "open_price",
-                "high_price",
-                "low_price",
-                "close_price",
-                "volume",
-                "currency",
-            ],
+            logical_key_columns=["instrument_id", "timeframe", "event_time", "source"],
         )
 
     def get_bars_as_of(
@@ -139,18 +139,18 @@ class MarketBarRepository:
         end: datetime,
         as_of: datetime,
     ) -> list[MarketBarRow]:
-        stmt = (
-            select(market_bars)
-            .where(
+        rows = select_latest_revision_as_of(
+            self._session,
+            market_bars,
+            logical_key_columns=["instrument_id", "timeframe", "event_time", "source"],
+            filters=[
                 market_bars.c.instrument_id == instrument_id,
                 market_bars.c.timeframe == timeframe,
                 market_bars.c.event_time >= start,
                 market_bars.c.event_time <= end,
-                market_bars.c.available_at <= as_of,
-            )
-            .order_by(market_bars.c.event_time)
+            ],
+            as_of=as_of,
         )
-        rows = self._session.execute(stmt).mappings().all()
         return [
             MarketBarRow(**{f: row[f] for f in MarketBarRow.__dataclass_fields__}) for row in rows
         ]

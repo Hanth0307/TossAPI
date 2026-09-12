@@ -1,16 +1,33 @@
 """PostgreSQL schema (SQLAlchemy Core) for the Phase 03 Data Platform.
 
-Every table follows one of three column conventions, documented in
+Every table follows one of four column conventions, documented in
 docs/architecture/0008-data-platform.md:
 
-- **Observed-event tables** (market_bars, trade_ticks,
-  orderbook_snapshots, news_events, disclosure_events, signals,
-  positions, account_snapshots): `event_time` (when it happened in the
-  world), `available_at` (when *we* could first have known it - the
-  point-in-time cutoff every historical read filters on; see
+- **Revisioned observed-event tables** (market_bars, news_events,
+  disclosure_events): `event_time`/`available_at`/`ingested_at` as
+  below, plus `revision` (an integer, monotonically increasing per
+  logical event). The natural-key `UniqueConstraint` includes
+  `available_at`, so a correction (a new `available_at` for the same
+  logical event) INSERTs a new revision row instead of overwriting the
+  old one - see `app.db.upsert.append_revision_rows` and ADR 0009 for
+  why plain "UPDATE in place, keep the original available_at" leaks
+  future-corrected values into a point-in-time read whose `as_of`
+  predates the correction. Re-submitting the exact same correction
+  (identical `available_at`) is still idempotent (`ON CONFLICT DO
+  UPDATE` touching only `ingested_at`).
+- **Plain observed-event tables** (trade_ticks, orderbook_snapshots,
+  signals, positions, account_snapshots): `event_time` (when it
+  happened), `available_at` (when *we* could first have known it -
+  the point-in-time cutoff every historical read filters on; see
   `app.db.repositories`), `ingested_at` (last time this row was
-  written/touched). A natural-key `UniqueConstraint` makes re-ingesting
-  the same event idempotent (see `app.db.upsert`).
+  written/touched). A natural-key `UniqueConstraint` (NOT including
+  `available_at`) makes re-ingesting the same event idempotent via
+  `app.db.upsert.upsert_event_rows` (`ON CONFLICT DO UPDATE`,
+  `available_at` excluded from the `SET` clause so it is preserved
+  from first insert). These are not expected to be externally
+  corrected in the way news/disclosures/market prices are - see ADR
+  0009 for the scope decision and how to extend the revisioned
+  pattern to one of these later if that changes.
 - **Operational run tables** (model_runs, backtest_runs): our own
   pipeline executions, not observed market data - `started_at`/
   `finished_at`/`status` plus a nullable-but-unique `idempotency_key`
@@ -34,6 +51,7 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    Integer,
     MetaData,
     Numeric,
     String,
@@ -74,6 +92,15 @@ def _event_columns() -> list[Column]:
     ]
 
 
+def _revision_column() -> Column:
+    """Monotonically increasing per logical event - see
+    `app.db.upsert.append_revision_rows`. Not a server-generated
+    sequence: computed per-insert from existing rows sharing the same
+    logical key, so it starts at 1 for every distinct event.
+    """
+    return Column("revision", Integer, nullable=False)
+
+
 # --- Reference data -------------------------------------------------------
 
 instruments = Table(
@@ -105,6 +132,7 @@ market_bars = Table(
     ),
     Column("timeframe", String(8), nullable=False),
     *_event_columns(),
+    _revision_column(),
     Column("open_price", Numeric, nullable=False),
     Column("high_price", Numeric, nullable=False),
     Column("low_price", Numeric, nullable=False),
@@ -113,7 +141,10 @@ market_bars = Table(
     Column("currency", String(8), nullable=True),
     Column("source", String(32), nullable=False),
     Column("raw_payload", JSONB, nullable=True),
-    UniqueConstraint("instrument_id", "timeframe", "event_time", "source"),
+    # available_at is part of the natural key on purpose - a correction
+    # (new available_at) is a new revision row, never an overwrite of
+    # the original. See module docstring and ADR 0009.
+    UniqueConstraint("instrument_id", "timeframe", "event_time", "source", "available_at"),
     Index("ix_market_bars_lookup", "instrument_id", "timeframe", "event_time"),
 )
 
@@ -170,11 +201,13 @@ news_events = Table(
     Column("source", String(32), nullable=False),
     Column("external_id", String(128), nullable=False),
     *_event_columns(),
+    _revision_column(),
     Column("headline", Text, nullable=False),
     Column("body", Text, nullable=True),
     Column("related_symbols", JSONB, nullable=True),
     Column("raw_payload", JSONB, nullable=True),
-    UniqueConstraint("source", "external_id"),
+    # available_at part of the natural key - see market_bars above / ADR 0009.
+    UniqueConstraint("source", "external_id", "available_at"),
 )
 
 disclosure_events = Table(
@@ -190,10 +223,12 @@ disclosure_events = Table(
         nullable=True,
     ),
     *_event_columns(),
+    _revision_column(),
     Column("title", Text, nullable=False),
     Column("filing_type", String(64), nullable=True),
     Column("raw_payload", JSONB, nullable=True),
-    UniqueConstraint("source", "external_id"),
+    # available_at part of the natural key - see market_bars above / ADR 0009.
+    UniqueConstraint("source", "external_id", "available_at"),
 )
 
 # --- Strategy Research Lab mirror (dimension table) -----------------------

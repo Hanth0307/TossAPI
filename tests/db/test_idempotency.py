@@ -51,9 +51,13 @@ def test_reingesting_the_same_market_bar_does_not_duplicate(migrated_schema, db_
     assert count == 1
 
 
-def test_reingesting_a_corrected_market_bar_updates_in_place_and_preserves_available_at(
+def test_reingesting_a_corrected_market_bar_appends_a_new_revision_not_an_overwrite(
     migrated_schema, db_session
 ) -> None:
+    """A correction must never mutate the original row in place - see
+    tests/db/test_point_in_time_correction.py for the full point-in-time
+    (future-correction-leakage) regression coverage this enables.
+    """
     instrument = InstrumentRepository(db_session).get_or_create(
         exchange="KRX", symbol="005930", source="toss_openapi"
     )
@@ -64,12 +68,18 @@ def test_reingesting_a_corrected_market_bar_updates_in_place_and_preserves_avail
     bars.upsert_bars([_bar_row(instrument.id, later_available_at, "106")])  # corrected close
 
     rows = db_session.execute(
-        select(market_bars).where(market_bars.c.instrument_id == instrument.id)
+        select(market_bars)
+        .where(market_bars.c.instrument_id == instrument.id)
+        .order_by(market_bars.c.available_at)
     ).mappings().all()
 
-    assert len(rows) == 1
-    assert rows[0]["close_price"] == 106
-    assert rows[0]["available_at"] == AVAILABLE_AT  # first-seen time preserved, not overwritten
+    assert len(rows) == 2  # both revisions preserved, not collapsed into one
+    assert rows[0]["available_at"] == AVAILABLE_AT
+    assert rows[0]["close_price"] == 105
+    assert rows[0]["revision"] == 1
+    assert rows[1]["available_at"] == later_available_at
+    assert rows[1]["close_price"] == 106
+    assert rows[1]["revision"] == 2
 
 
 def test_reingesting_the_same_paper_order_client_id_does_not_duplicate(

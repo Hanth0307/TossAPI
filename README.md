@@ -46,12 +46,19 @@ registry, signals, model/backtest runs, paper/broker orders,
 positions, account snapshots, and a system-events audit log. Every
 historical read requires an `as_of: datetime` and filters
 `available_at <= as_of`, so a backtest or training query can never see
-data that was not yet available at that point in time. `app/ingest`
-pulls from `app.toss` (market data) and mock news/DART collectors and
-writes through those repositories, idempotently. See
+data that was not yet available at that point in time - and for the
+tables where an external source can issue a correction
+(`market_bars`, `news_events`, `disclosure_events`), a correction is
+appended as a new revision rather than overwriting history, so
+re-running a query at an `as_of` before the correction still returns
+the original value (see `tests/db/test_point_in_time_correction.py`).
+`app/ingest` pulls from `app.toss` (market data) and mock news/DART
+collectors and writes through those repositories, idempotently. See
 `docs/architecture/0008-data-platform.md` (ERD, idempotency rules,
-point-in-time design) and `docs/architecture/0009-corporate-actions-and-adjusted-price.md`
-(documented future extensions).
+point-in-time design) and
+`docs/architecture/0009-corporate-actions-and-adjusted-price.md`
+(the correction-history fix, plus still-deferred adjusted-price/
+corporate-action/trading-calendar extensions).
 
 ## Module map and dependency direction
 
@@ -104,11 +111,14 @@ structure, in particular:
 - `0007-toss-api-integration.md` - the confirmed Toss Open API spec
   used, raw-vs-normalized model split, error mapping, rate limiting,
   and the code-level read-only enforcement
-- `0008-data-platform.md` - ERD, the three column conventions,
+- `0008-data-platform.md` - ERD, the four column conventions,
   idempotency rules, and the point-in-time (`as_of`) read guarantee
-- `0009-corporate-actions-and-adjusted-price.md` - documented future
-  extensions (adjusted price, full bi-temporal history, a trading
-  calendar) - a design record only, nothing implemented yet
+- `0009-corporate-actions-and-adjusted-price.md` - **implemented**:
+  append-only revision history for `market_bars`/`news_events`/
+  `disclosure_events`, why in-place correction was a real point-in-
+  time leak, not an acceptable simplification. Also documents
+  adjusted price, corporate actions, and a trading calendar as
+  still-deferred design records
 
 ## Setup
 
@@ -173,7 +183,10 @@ hardcoded value.
   `available_at <= as_of`, so a model-training or backtest query can
   never see future-relative-to-`as_of` data. Every ingestible table
   has a natural-key uniqueness constraint, so re-ingesting the same
-  event twice never creates a duplicate row - see ADR 0008.
+  event twice never creates a duplicate row - see ADR 0008. For
+  `market_bars`/`news_events`/`disclosure_events`, a correction is
+  appended as a new revision rather than overwriting history, so this
+  guarantee holds even after a correction lands - see ADR 0009.
 
 ## Strategy Research Lab (Phase 01)
 

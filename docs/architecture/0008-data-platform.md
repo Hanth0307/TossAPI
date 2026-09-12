@@ -64,6 +64,7 @@ erDiagram
         timestamptz event_time
         timestamptz available_at
         timestamptz ingested_at
+        int revision
         numeric open_price
         numeric close_price
     }
@@ -88,6 +89,7 @@ erDiagram
         text external_id
         timestamptz event_time
         timestamptz available_at
+        int revision
     }
     disclosure_events {
         bigint id PK
@@ -95,6 +97,7 @@ erDiagram
         text external_id
         bigint instrument_id FK
         timestamptz event_time
+        int revision
     }
     strategy_registry {
         bigint id PK
@@ -159,20 +162,27 @@ erDiagram
 ### Three column conventions
 Every table is one of (see `app/db/schema.py` module docstring):
 
-1. **Observed-event** (`market_bars`, `trade_ticks`,
-   `orderbook_snapshots`, `news_events`, `disclosure_events`,
+1. **Revisioned observed-event** (`market_bars`, `news_events`,
+   `disclosure_events`): `event_time`/`available_at`/`ingested_at` as
+   below, plus an integer `revision`. `available_at` is *part of* the
+   natural key, so a correction appends a new revision row instead of
+   overwriting - see "Corrections do not leak into the past" below and
+   `app.db.upsert.append_revision_rows`.
+2. **Plain observed-event** (`trade_ticks`, `orderbook_snapshots`,
    `signals`, `positions`, `account_snapshots`): `event_time` (when it
    happened), `available_at` (when we could first have known it),
-   `ingested_at` (last write). A natural-key `UniqueConstraint` makes
-   re-ingestion idempotent via `app.db.upsert.upsert_event_rows`
-   (`INSERT ... ON CONFLICT DO UPDATE`, `available_at` excluded from
-   the `SET` clause so it is preserved from first insert).
-2. **Operational run** (`model_runs`, `backtest_runs`): our own
+   `ingested_at` (last write). A natural-key `UniqueConstraint` (NOT
+   including `available_at`) makes re-ingestion idempotent via
+   `app.db.upsert.upsert_event_rows` (`INSERT ... ON CONFLICT DO
+   UPDATE`, `available_at` excluded from the `SET` clause so it is
+   preserved from first insert). Not expected to receive external
+   corrections - see ADR 0009 for the scope decision.
+3. **Operational run** (`model_runs`, `backtest_runs`): our own
    pipeline executions - `started_at`/`finished_at`/`status` plus a
    nullable-but-unique `idempotency_key` (`app.db.repositories.
    _idempotent_insert.get_or_insert`) so resuming after a restart with
    the same key returns the existing run instead of duplicating it.
-3. **Order** (`paper_orders`, `broker_orders`): our own actions -
+4. **Order** (`paper_orders`, `broker_orders`): our own actions -
    unique on `client_order_id` (mirrors `app.brokers.base.OrderRequest`
    from Phase 00) / `(broker_order_id, source)`.
 
@@ -184,11 +194,11 @@ following the same "never guess, always dedupe" spirit.
 | Table | Natural key |
 |---|---|
 | instruments | `(exchange, symbol)` |
-| market_bars | `(instrument_id, timeframe, event_time, source)` |
+| market_bars | `(instrument_id, timeframe, event_time, source, available_at)` - revisioned, see below |
 | trade_ticks | `(instrument_id, event_time, source, price, volume)` * |
 | orderbook_snapshots | `(instrument_id, event_time, source)` |
-| news_events | `(source, external_id)` |
-| disclosure_events | `(source, external_id)` |
+| news_events | `(source, external_id, available_at)` - revisioned, see below |
+| disclosure_events | `(source, external_id, available_at)` - revisioned, see below |
 | strategy_registry | `(strategy_id, version)` |
 | signals | `(model_run_id, instrument_id, event_time)` |
 | model_runs | `idempotency_key` (nullable - only when resumability matters) |
@@ -216,19 +226,31 @@ after the point in time it is simulating. See
 own `available_at` has passed, never before - even though all ten
 days of bars already exist in the table from a single backfill.
 
-**Documented simplification, not full bi-temporal versioning:** a
-later correction to an already-ingested row (`upsert_event_rows`'s
-`ON CONFLICT DO UPDATE`) changes that row's values in place while
-`available_at` stays pinned to the original first-seen time. This
-means a query with an `as_of` between the original ingestion and a
-later correction will see the *corrected* value, not the value that
-was actually known at that `as_of` - `tests/db/test_point_in_time.py::
-test_a_later_correction_does_not_retroactively_change_an_earlier_as_of_answer`
-locks this behavior in explicitly rather than leaving it an
-accident. Full bi-temporal versioning (a new row per correction,
-so an as_of query reconstructs exactly what was knowable then) is a
-real extension, deferred - see ADR 0009, which also covers the
-related adjusted-price/corporate-action problem.
+**Corrections do not leak into the past.** For tables where an
+external source can issue a correction with new values at a later
+`available_at` (`market_bars`, `news_events`, `disclosure_events`),
+`app.db.upsert.append_revision_rows` inserts the correction as a new,
+separate revision row rather than updating the original in place -
+`available_at` is part of the natural key, not excluded from it. A
+point-in-time read (`app.db.repositories._revisions.
+select_latest_revision_as_of`) then picks, per logical event, the
+revision with the greatest `available_at <= as_of`; a revision whose
+`available_at` is after the query's `as_of` is excluded from the
+candidate set entirely, so it structurally cannot be selected. See
+ADR 0009 (amended) for why the earlier "update in place, keep the
+original `available_at`" design was a real point-in-time information
+leak - not an acceptable simplification - and
+`tests/db/test_point_in_time_correction.py` for the regression suite
+locking in the fixed behavior (the exact "value=100 on 09-01, corrected
+to 105 on 09-03" scenario, idempotent resubmission, and "ingesting a
+correction never changes a past `as_of` result").
+
+Tables not expected to receive external corrections (`trade_ticks`,
+`orderbook_snapshots`, `signals`, `positions`, `account_snapshots`)
+keep the simpler `upsert_event_rows` (`ON CONFLICT DO UPDATE`,
+`available_at` preserved from first insert, values updated in place)
+- see ADR 0009 for that scope decision and how to extend the
+revisioned pattern to one of them later if it changes.
 
 ### Ingest flow
 `app.ingest` pulls from a source and writes through a repository:

@@ -29,6 +29,8 @@ risk        -> core, brokers        (only for the OrderRequest type)
 execution   -> core, brokers, risk
 research    -> core                 (added Phase 01, see ADR 0006)
 toss        -> core, adapters       (added Phase 02, see ADR 0007)
+db          -> core                                  (added Phase 03, see ADR 0008)
+ingest      -> core, db, toss, data, research         (added Phase 03, see ADR 0008)
 ```
 
 Rules:
@@ -52,6 +54,13 @@ Rules:
   API outage cannot affect strategy research, and a TradingView MCP
   outage (ADR 0006) cannot affect this gateway. `toss` also has no
   order-mutating capability at all: see ADR 0007.
+- `db` (schema, migrations, repositories) depends on `core` only - it
+  has no import edge to `toss`, `research`, `brokers`, `risk`, or
+  `execution`. It only stores and queries rows; it never fetches
+  anything itself. `ingest` is the one package allowed to depend on
+  `db`, `toss`, `data`, and `research` together - it is where "fetch
+  from an external source" and "write through a repository" meet, and
+  nothing depends on `ingest` in return. See ADR 0008.
 - Each package's `__init__.py` states its allowed dependencies in a
   docstring, so the boundary is visible from the file itself.
 

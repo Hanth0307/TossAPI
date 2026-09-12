@@ -39,6 +39,20 @@ been verified, so none is implemented (see status block in
 `app/toss/market_data.py`). See
 `docs/architecture/0007-toss-api-integration.md`.
 
+**Phase 03: Data Platform.** `app/db` is a PostgreSQL schema (15
+tables, `alembic`-migrated) + repository layer for instruments, market
+bars/ticks/orderbook snapshots, news/disclosure events, the strategy
+registry, signals, model/backtest runs, paper/broker orders,
+positions, account snapshots, and a system-events audit log. Every
+historical read requires an `as_of: datetime` and filters
+`available_at <= as_of`, so a backtest or training query can never see
+data that was not yet available at that point in time. `app/ingest`
+pulls from `app.toss` (market data) and mock news/DART collectors and
+writes through those repositories, idempotently. See
+`docs/architecture/0008-data-platform.md` (ERD, idempotency rules,
+point-in-time design) and `docs/architecture/0009-corporate-actions-and-adjusted-price.md`
+(documented future extensions).
+
 ## Module map and dependency direction
 
 ```
@@ -54,6 +68,8 @@ risk        -> core, brokers        (OrderRequest type only)
 execution   -> core, brokers, risk
 research    -> core                 (Phase 01, see ADR 0006)
 toss        -> core, adapters       (Phase 02, see ADR 0007)
+db          -> core                                  (Phase 03, see ADR 0008)
+ingest      -> core, db, toss, data, research         (Phase 03, see ADR 0008)
 ```
 
 | Package | Responsibility |
@@ -70,6 +86,8 @@ toss        -> core, adapters       (Phase 02, see ADR 0007)
 | `app/execution` | Orchestrates risk check + broker submission for one order |
 | `app/research` | Strategy Research Lab: `StrategySpec` model, file-based Strategy Registry, isolated TradingView MCP health check |
 | `app/toss` | Toss Open API integration: OAuth2 client, `MarketDataAdapter`, `PortfolioReadAdapter` - read-only, no order-placing code |
+| `app/db` | Data Platform: PostgreSQL schema (`schema.py`), migrations (`alembic/`), repositories with point-in-time (`as_of`) reads and idempotent upserts, data quality metrics |
+| `app/ingest` | Ingestion orchestration: pulls from `app.toss`/collector interfaces and writes through `app.db.repositories`; news/DART mock collectors, market-bar ingestor, Strategy Registry DB sync, interval scheduler |
 
 See `docs/architecture/` for the design decisions (ADRs) behind this
 structure, in particular:
@@ -86,6 +104,11 @@ structure, in particular:
 - `0007-toss-api-integration.md` - the confirmed Toss Open API spec
   used, raw-vs-normalized model split, error mapping, rate limiting,
   and the code-level read-only enforcement
+- `0008-data-platform.md` - ERD, the three column conventions,
+  idempotency rules, and the point-in-time (`as_of`) read guarantee
+- `0009-corporate-actions-and-adjusted-price.md` - documented future
+  extensions (adjusted price, full bi-temporal history, a trading
+  calendar) - a design record only, nothing implemented yet
 
 ## Setup
 
@@ -113,14 +136,18 @@ make typecheck  # mypy app
 make check       # lint + typecheck + test
 ```
 
-## Local PostgreSQL (optional, for a later phase)
+## PostgreSQL and migrations (Phase 03)
 
 ```bash
-docker compose up -d db
+docker compose up -d db      # starts a local Postgres matching .env.example
+alembic upgrade head          # creates all 15 tables
+alembic downgrade base         # drops them again (round-trips cleanly - see ADR 0008)
 ```
 
-No application code depends on PostgreSQL yet; this just prepares the
-local infrastructure for when a persistence layer is added.
+`DATABASE_URL` in `.env` (see `.env.example`) is the only place a
+connection string is configured - `alembic/env.py` and
+`app.db.engine.build_engine` both read it from `Settings`, never a
+hardcoded value.
 
 ## Safety notes
 
@@ -141,6 +168,12 @@ local infrastructure for when a persistence layer is added.
   is set - see ADR 0007. `TOSS_CLIENT_ID`/`TOSS_CLIENT_SECRET`/
   `TOSS_ACCOUNT_SEQ` are never hardcoded or logged (`pydantic.SecretStr`
   end to end; see `tests/toss/test_secret_redaction.py`).
+- `app/db` (Phase 03) has no "get everything" read method for
+  historical data - every such method requires `as_of` and filters
+  `available_at <= as_of`, so a model-training or backtest query can
+  never see future-relative-to-`as_of` data. Every ingestible table
+  has a natural-key uniqueness constraint, so re-ingesting the same
+  event twice never creates a duplicate row - see ADR 0008.
 
 ## Strategy Research Lab (Phase 01)
 
@@ -174,6 +207,32 @@ gateways = build_toss_gateways(get_settings())
 quote = gateways.market_data.get_price("005930")
 ```
 
+## Data Platform (Phase 03)
+
+Every historical read requires `as_of` and filters `available_at <=
+as_of` - see `docs/architecture/0008-data-platform.md`.
+
+```python
+from datetime import UTC, datetime
+
+from app.db.engine import build_engine, build_session_factory, session_scope
+from app.db.repositories import InstrumentRepository, MarketBarRepository
+from app.core.config import get_settings
+
+engine = build_engine(get_settings())
+with session_scope(build_session_factory(engine)) as session:
+    instrument = InstrumentRepository(session).get_or_create(
+        exchange="KRX", symbol="005930", source="toss_openapi"
+    )
+    bars = MarketBarRepository(session).get_bars_as_of(
+        instrument_id=instrument.id,
+        timeframe="1d",
+        start=datetime(2026, 1, 1, tzinfo=UTC),
+        end=datetime(2026, 3, 1, tzinfo=UTC),
+        as_of=datetime.now(UTC),  # never see bars that weren't available yet
+    )
+```
+
 ## Roadmap
 
 - **Phase 00 (done)**: project skeleton - config, logging, exceptions,
@@ -182,8 +241,12 @@ quote = gateways.market_data.get_price("005930")
   based Strategy Registry, isolated TradingView MCP health check.
 - **Phase 02 (done)**: Toss Open API integration - OAuth2 auth,
   Market Data Gateway, Portfolio Read Gateway, all read-only.
-- **Phase 03+**: a paper broker implementation, a first scanner, and a
-  first backtest engine implementation, plus confirming the remaining
-  9 endpoints' response schemas - each phase should only need to fill
-  in a `base.py` interface (or add a DTO under `app/toss/dto.py`), not
-  change these boundaries.
+- **Phase 03 (done)**: Data Platform - PostgreSQL schema + migrations,
+  point-in-time repositories, idempotent ingestion, data quality
+  metrics, news/DART mock collectors.
+- **Phase 04+**: a first Scanner (reading through `app.db.repositories`
+  exclusively), a first backtest engine implementation, a paper broker
+  implementation, and confirming the remaining 9 Toss endpoints'
+  response schemas - each phase should only need to fill in a
+  `base.py` interface (or add a DTO/table), not change these
+  boundaries.

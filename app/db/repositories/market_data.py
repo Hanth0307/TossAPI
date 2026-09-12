@@ -30,6 +30,7 @@ class InstrumentRow:
     name: str | None
     currency: str | None
     source: str
+    raw_payload: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,22 @@ class InstrumentRepository:
         if row is None:
             return None
         return InstrumentRow(**{f: row[f] for f in InstrumentRow.__dataclass_fields__})
+
+    def list_all(self, *, exchange: str | None = None) -> list[InstrumentRow]:
+        """The "Market" step of the Scanner pipeline (Phase 04): every
+        known instrument, optionally narrowed to one exchange. Not
+        as_of-gated - `instruments` is reference data (current best-
+        known symbol/exchange mapping), not a point-in-time observation
+        (see ADR 0009's scope decision on reference/master data).
+        """
+        stmt = select(instruments).order_by(instruments.c.exchange, instruments.c.symbol)
+        if exchange is not None:
+            stmt = stmt.where(instruments.c.exchange == exchange)
+        rows = self._session.execute(stmt).mappings().all()
+        return [
+            InstrumentRow(**{f: row[f] for f in InstrumentRow.__dataclass_fields__})
+            for row in rows
+        ]
 
 
 class MarketBarRepository:

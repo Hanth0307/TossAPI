@@ -20,17 +20,17 @@ Top-level packages under `app/` and their allowed dependency direction
 core        <- (everything; core imports nothing else under app/)
 adapters    -> core
 data        -> core, adapters
-scanners    -> core, data
 models      -> core
 strategies  -> core, data, models
 backtest    -> core, data, strategies
 brokers     -> core, adapters
 risk        -> core, brokers        (only for the OrderRequest type)
 execution   -> core, brokers, risk
-research    -> core                 (added Phase 01, see ADR 0006)
-toss        -> core, adapters       (added Phase 02, see ADR 0007)
+research    -> core                                   (added Phase 01, see ADR 0006)
+toss        -> core, adapters                         (added Phase 02, see ADR 0007)
 db          -> core                                  (added Phase 03, see ADR 0008)
 ingest      -> core, db, toss, data, research         (added Phase 03, see ADR 0008)
+scanners    -> core, db                               (added Phase 04, see ADR 0010)
 ```
 
 Rules:
@@ -61,6 +61,12 @@ Rules:
   `db`, `toss`, `data`, and `research` together - it is where "fetch
   from an external source" and "write through a repository" meet, and
   nothing depends on `ingest` in return. See ADR 0008.
+- `scanners` (Phase 04's Universe/Event/Strategy scanner pipeline)
+  depends on `core` and `db` only - it has no import edge to `toss`,
+  `research`, `ingest`, `brokers`, `risk`, or `execution`. It reads
+  exclusively through `app.db.repositories`'s `as_of`-gated methods
+  and never calls an external API itself; a `Candidate` it produces is
+  a research artifact, never an order. See ADR 0010.
 - Each package's `__init__.py` states its allowed dependencies in a
   docstring, so the boundary is visible from the file itself.
 

@@ -60,23 +60,43 @@ point-in-time design) and
 (the correction-history fix, plus still-deferred adjusted-price/
 corporate-action/trading-calendar extensions).
 
+**Phase 04: Scanner layer.** `app/scanners` narrows "every known
+instrument" down to research candidates in four stages - Market
+(`InstrumentRepository.list_all`) -> Universe Filter
+(liquidity/turnover/price-range/status, thresholds always passed in,
+never hardcoded) -> Event Scanner (price gap, abnormal volume,
+volatility spike, news/disclosure occurrence, orderbook imbalance -
+existence/count-based only, no invented sentiment score - with a
+`market` field so Korean/US-specific rules stay separate) -> Strategy
+Scanner (evaluates a structured `StrategyRuleSet`, deliberately
+separate from `StrategySpec`'s free-text research prose, against a
+computed `FeatureSet`). The output is a `Candidate` per instrument
+carrying every stage's PASS/FAIL and observed values, never a bare
+ticker list and never an order - `app.brokers`/`app.execution` remain
+interface-only regardless of a `Candidate.qualified` flag.
+`ScannerPipeline` reads exclusively through `app.db.repositories`'s
+`as_of`-gated methods, so a scan is exactly as leak-free as the data
+platform underneath it (see
+`tests/scanners/test_pipeline_integration.py`). See
+`docs/architecture/0010-scanner-pipeline.md`.
+
 ## Module map and dependency direction
 
 ```
 core        <- (everything; core imports nothing else under app/)
 adapters    -> core
 data        -> core, adapters
-scanners    -> core, data
 models      -> core
 strategies  -> core, data, models
 backtest    -> core, data, strategies
 brokers     -> core, adapters
 risk        -> core, brokers        (OrderRequest type only)
 execution   -> core, brokers, risk
-research    -> core                 (Phase 01, see ADR 0006)
-toss        -> core, adapters       (Phase 02, see ADR 0007)
+research    -> core                                   (Phase 01, see ADR 0006)
+toss        -> core, adapters                         (Phase 02, see ADR 0007)
 db          -> core                                  (Phase 03, see ADR 0008)
 ingest      -> core, db, toss, data, research         (Phase 03, see ADR 0008)
+scanners    -> core, db                               (Phase 04, see ADR 0010)
 ```
 
 | Package | Responsibility |
@@ -84,7 +104,6 @@ ingest      -> core, db, toss, data, research         (Phase 03, see ADR 0008)
 | `app/core` | Settings (`config.py`), structured logging (`logging.py`), exception hierarchy (`exceptions.py`) |
 | `app/adapters` | Common outbound-HTTP timeout/retry policy (`http_client.py`) |
 | `app/data` | Market data / news / disclosure provider interfaces |
-| `app/scanners` | Symbol scanning/filtering interface |
 | `app/models` | AI/quant signal model interface |
 | `app/strategies` | Strategy interface (market data + signals -> order intents) |
 | `app/backtest` | Backtest engine interface |
@@ -95,6 +114,7 @@ ingest      -> core, db, toss, data, research         (Phase 03, see ADR 0008)
 | `app/toss` | Toss Open API integration: OAuth2 client, `MarketDataAdapter`, `PortfolioReadAdapter` - read-only, no order-placing code |
 | `app/db` | Data Platform: PostgreSQL schema (`schema.py`), migrations (`alembic/`), repositories with point-in-time (`as_of`) reads and idempotent upserts, data quality metrics |
 | `app/ingest` | Ingestion orchestration: pulls from `app.toss`/collector interfaces and writes through `app.db.repositories`; news/DART mock collectors, market-bar ingestor, Strategy Registry DB sync, interval scheduler |
+| `app/scanners` | Scanner pipeline: Market -> Universe Filter -> Event Scanner -> Strategy Scanner -> `Candidate`, reading exclusively through `app.db.repositories` |
 
 See `docs/architecture/` for the design decisions (ADRs) behind this
 structure, in particular:
@@ -119,6 +139,11 @@ structure, in particular:
   time leak, not an acceptable simplification. Also documents
   adjusted price, corporate actions, and a trading calendar as
   still-deferred design records
+- `0010-scanner-pipeline.md` - the Market -> Universe Filter -> Event
+  Scanner -> Strategy Scanner -> `Candidate` pipeline, why
+  `StrategyRuleSet` is separate from `StrategySpec` prose, the
+  market-specific event-rule mechanism, and the interfaces Phase 05
+  is expected to consume (`FeatureSet`, `EventDetection`, `Candidate`)
 
 ## Setup
 
@@ -187,6 +212,14 @@ hardcoded value.
   `market_bars`/`news_events`/`disclosure_events`, a correction is
   appended as a new revision rather than overwriting history, so this
   guarantee holds even after a correction lands - see ADR 0009.
+- `app/scanners` (Phase 04) never places, suggests, or triggers a
+  trade - a `Candidate.qualified=True` is a research artifact, not an
+  order, and `app/brokers`/`app/execution` stay interface-only
+  regardless of it. No sentiment/quality score is invented for news or
+  disclosure events - `NewsOccurrenceEventScanner`/
+  `DisclosureOccurrenceEventScanner` are existence/count-based only.
+  Every filter/event threshold is a required constructor argument;
+  none is hardcoded in scanner logic - see ADR 0010.
 
 ## Strategy Research Lab (Phase 01)
 
@@ -246,6 +279,43 @@ with session_scope(build_session_factory(engine)) as session:
     )
 ```
 
+## Scanner pipeline (Phase 04)
+
+`Candidate`s are research artifacts, never orders - see
+`docs/architecture/0010-scanner-pipeline.md`.
+
+```python
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from app.core.config import get_settings
+from app.db.engine import build_engine, build_session_factory, session_scope
+from app.scanners.events import AbnormalVolumeEventScanner
+from app.scanners.pipeline import PipelineConfig, ScannerPipeline
+from app.scanners.universe import LiquidityFilter
+
+engine = build_engine(get_settings())
+with session_scope(build_session_factory(engine)) as session:
+    pipeline = ScannerPipeline(
+        session,
+        config=PipelineConfig(
+            timeframe="1d",
+            lookback_days=20,
+            news_lookback_days=7,
+            disclosure_lookback_days=30,
+            exchange="KRX",
+        ),
+        universe_filters=[LiquidityFilter(min_turnover_value=Decimal("1000000000"))],
+        event_scanners=[
+            AbnormalVolumeEventScanner(min_volume_multiple=Decimal("3"), market="KRX")
+        ],
+        strategy_rule_set=None,
+        data_source="toss_openapi",
+    )
+    candidates = pipeline.scan(as_of=datetime.now(UTC))
+    qualified = [c for c in candidates if c.qualified]
+```
+
 ## Roadmap
 
 - **Phase 00 (done)**: project skeleton - config, logging, exceptions,
@@ -257,9 +327,13 @@ with session_scope(build_session_factory(engine)) as session:
 - **Phase 03 (done)**: Data Platform - PostgreSQL schema + migrations,
   point-in-time repositories, idempotent ingestion, data quality
   metrics, news/DART mock collectors.
-- **Phase 04+**: a first Scanner (reading through `app.db.repositories`
-  exclusively), a first backtest engine implementation, a paper broker
-  implementation, and confirming the remaining 9 Toss endpoints'
-  response schemas - each phase should only need to fill in a
-  `base.py` interface (or add a DTO/table), not change these
-  boundaries.
+- **Phase 04 (done)**: Scanner layer - Market -> Universe Filter ->
+  Event Scanner -> Strategy Scanner -> `Candidate`, reading through
+  `app.db.repositories` exclusively, market-specific event rules,
+  `FeatureSet`/`EventDetection`/`Candidate` interfaces for Phase 05.
+- **Phase 05+**: a first AI/quant signal model (consuming
+  `app.scanners.features.FeatureSet`), a first backtest engine
+  implementation, a paper broker implementation, and confirming the
+  remaining 9 Toss endpoints' response schemas - each phase should
+  only need to fill in a `base.py` interface (or add a DTO/table), not
+  change these boundaries.

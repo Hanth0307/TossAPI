@@ -18,10 +18,12 @@ Import surface for Phase 04:
         StrategyRegistryRepository, SignalRepository, ModelRunRepository,
         BacktestRunRepository, PaperOrderRepository, BrokerOrderRepository,
         PositionRepository, AccountSnapshotRepository, SystemEventRepository,
+        AIContextRepository,
     )
 """
 
 from app.db.repositories.account import AccountSnapshotRepository
+from app.db.repositories.ai_context import AIContextRepository
 from app.db.repositories.disclosure import DisclosureRepository
 from app.db.repositories.market_data import (
     InstrumentRepository,
@@ -38,6 +40,7 @@ from app.db.repositories.strategy import StrategyRegistryRepository
 from app.db.repositories.system_events import SystemEventRepository
 
 __all__ = [
+    "AIContextRepository",
     "AccountSnapshotRepository",
     "BacktestRunRepository",
     "BrokerOrderRepository",

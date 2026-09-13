@@ -20,7 +20,6 @@ Top-level packages under `app/` and their allowed dependency direction
 core        <- (everything; core imports nothing else under app/)
 adapters    -> core
 data        -> core, adapters
-models      -> core
 strategies  -> core, data, models
 backtest    -> core, data, strategies
 brokers     -> core, adapters
@@ -31,6 +30,10 @@ toss        -> core, adapters                         (added Phase 02, see ADR 0
 db          -> core                                  (added Phase 03, see ADR 0008)
 ingest      -> core, db, toss, data, research         (added Phase 03, see ADR 0008)
 scanners    -> core, db                               (added Phase 04, see ADR 0010)
+models      -> core, db                               (Quant Model, Phase 05, see ADR 0011)
+ai_context  -> core, db                               (added Phase 05, see ADR 0011)
+regime      -> core, db                               (added Phase 05, see ADR 0011)
+signals     -> core, db, ai_context, models, regime   (added Phase 05, see ADR 0011)
 ```
 
 Rules:
@@ -67,6 +70,18 @@ Rules:
   exclusively through `app.db.repositories`'s `as_of`-gated methods
   and never calls an external API itself; a `Candidate` it produces is
   a research artifact, never an order. See ADR 0010.
+- `models` (Phase 05's Quant Model baseline), `ai_context` (Phase 05's
+  LLM-based news/disclosure classification), and `regime` (Phase 05's
+  Market Regime classifier) each depend on `core` and `db` only - none
+  has an import edge to `toss`, `research`, `ingest`, `scanners`,
+  `brokers`, `risk`, or `execution`, and critically, none of the three
+  imports either of the other two: an LLM never sees price data and a
+  numeric model never sees article text. `signals` is the one package
+  allowed to depend on all three together plus `db` - it is where "AI
+  Context, Quant probability, and Regime meet," and, like `scanners`,
+  produces a structured research artifact (`SignalInput`) that is
+  never an order - it has no import edge to `brokers`/`execution`
+  either. See ADR 0011.
 - Each package's `__init__.py` states its allowed dependencies in a
   docstring, so the boundary is visible from the file itself.
 

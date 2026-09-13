@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 10.0
     http_max_retries: int = 3
 
+    # AI Context extraction (Phase 05, see ADR 0011). Never defaulted -
+    # `app.ai_context.claude_extractor.ClaudeContextExtractor` requires
+    # an explicit key; its absence is a configuration fact, not a
+    # reason to guess or fall back to a hardcoded one.
+    anthropic_api_key: SecretStr | None = None
+    anthropic_model: str = "claude-opus-5"
+
     # Hard safety default. Must stay True until a reviewed live-broker
     # adapter exists; Phase 00 ships no order-placing code at all.
     paper_trading_only: bool = True

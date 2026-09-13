@@ -80,13 +80,33 @@ platform underneath it (see
 `tests/scanners/test_pipeline_integration.py`). See
 `docs/architecture/0010-scanner-pipeline.md`.
 
+**Phase 05: AI Context, Quant Model, Market Regime, Signal Engine.**
+Four packages, deliberately kept apart until `app.signals`: `app/
+ai_context` turns one news/disclosure item into a fixed structured
+classification via `client.messages.parse` (entity links, event type,
+direct/indirect and one-off/structural impact, novelty/dedup
+clustering, source reliability, a 1d/5d/10d/long-term impact horizon)
+- an LLM failure or an unparseable response becomes an explicit
+`status=unknown` result with every field at its `UNKNOWN` variant,
+never a guess. `app/regime` classifies trend/volatility/breadth from
+`as_of`-gated benchmark bars, every threshold passed in explicitly.
+`app/models` trains a baseline (logistic regression + calibration)
+quant model on a 5-trading-day forward-return label, with feature and
+label windows fetched from two structurally separate repository calls
+so leakage is prevented by the code shape, not a convention; evaluation
+reports AUC, precision/recall, Brier score, Expected Calibration
+Error, class balance, and per-period/per-regime breakdowns together,
+never AUC alone. `app/signals` combines all three into a `SignalInput`
+per `(instrument, as_of)` - **still no order is generated anywhere in
+this phase**. See
+`docs/architecture/0011-ai-context-quant-regime-signal-engine.md`.
+
 ## Module map and dependency direction
 
 ```
 core        <- (everything; core imports nothing else under app/)
 adapters    -> core
 data        -> core, adapters
-models      -> core
 strategies  -> core, data, models
 backtest    -> core, data, strategies
 brokers     -> core, adapters
@@ -97,6 +117,10 @@ toss        -> core, adapters                         (Phase 02, see ADR 0007)
 db          -> core                                  (Phase 03, see ADR 0008)
 ingest      -> core, db, toss, data, research         (Phase 03, see ADR 0008)
 scanners    -> core, db                               (Phase 04, see ADR 0010)
+models      -> core, db                               (Phase 05, see ADR 0011)
+ai_context  -> core, db                               (Phase 05, see ADR 0011)
+regime      -> core, db                               (Phase 05, see ADR 0011)
+signals     -> core, db, ai_context, models, regime   (Phase 05, see ADR 0011)
 ```
 
 | Package | Responsibility |
@@ -104,7 +128,6 @@ scanners    -> core, db                               (Phase 04, see ADR 0010)
 | `app/core` | Settings (`config.py`), structured logging (`logging.py`), exception hierarchy (`exceptions.py`) |
 | `app/adapters` | Common outbound-HTTP timeout/retry policy (`http_client.py`) |
 | `app/data` | Market data / news / disclosure provider interfaces |
-| `app/models` | AI/quant signal model interface |
 | `app/strategies` | Strategy interface (market data + signals -> order intents) |
 | `app/backtest` | Backtest engine interface |
 | `app/brokers` | Broker adapter interface (paper/live) - no real order calls |
@@ -115,6 +138,10 @@ scanners    -> core, db                               (Phase 04, see ADR 0010)
 | `app/db` | Data Platform: PostgreSQL schema (`schema.py`), migrations (`alembic/`), repositories with point-in-time (`as_of`) reads and idempotent upserts, data quality metrics |
 | `app/ingest` | Ingestion orchestration: pulls from `app.toss`/collector interfaces and writes through `app.db.repositories`; news/DART mock collectors, market-bar ingestor, Strategy Registry DB sync, interval scheduler |
 | `app/scanners` | Scanner pipeline: Market -> Universe Filter -> Event Scanner -> Strategy Scanner -> `Candidate`, reading exclusively through `app.db.repositories` |
+| `app/models` | Quant Model: baseline logistic-regression-plus-calibration `SignalModel`, leakage-safe feature/label/dataset construction, time-ordered training, evaluation, artifact storage |
+| `app/ai_context` | LLM-based news/disclosure classification: fixed output schema, isolated Claude API call with explicit `unknown` fallback |
+| `app/regime` | Market Regime: trend/volatility/breadth classification from `as_of`-gated benchmark bars |
+| `app/signals` | Signal Engine: structures AI Context + Quant probability + Regime into `SignalInput` - never an order |
 
 See `docs/architecture/` for the design decisions (ADRs) behind this
 structure, in particular:
@@ -144,6 +171,11 @@ structure, in particular:
   `StrategyRuleSet` is separate from `StrategySpec` prose, the
   market-specific event-rule mechanism, and the interfaces Phase 05
   is expected to consume (`FeatureSet`, `EventDetection`, `Candidate`)
+- `0011-ai-context-quant-regime-signal-engine.md` - the fixed AI
+  Context schema and its isolated/unknown-fallback LLM call, the Quant
+  Model's label/feature/leakage-prevention design and calibration
+  evaluation, the Market Regime classifier, and the `SignalInput`
+  structure `app.signals` produces (never an order)
 
 ## Setup
 
@@ -175,7 +207,7 @@ make check       # lint + typecheck + test
 
 ```bash
 docker compose up -d db      # starts a local Postgres matching .env.example
-alembic upgrade head          # creates all 15 tables
+alembic upgrade head          # creates all 16 tables
 alembic downgrade base         # drops them again (round-trips cleanly - see ADR 0008)
 ```
 
@@ -220,6 +252,15 @@ hardcoded value.
   `DisclosureOccurrenceEventScanner` are existence/count-based only.
   Every filter/event threshold is a required constructor argument;
   none is hardcoded in scanner logic - see ADR 0010.
+- `app/ai_context` (Phase 05) never fabricates a value: an LLM call
+  failure or an unparseable response produces an `AIContextResult`
+  with `status=unknown` and every classification field at its explicit
+  `UNKNOWN` variant, never a raised exception into a caller and never
+  a guessed value. `app/models` (Phase 05) fetches a training sample's
+  features and label from two structurally separate `as_of`-gated
+  repository calls, so the label horizon cannot leak into the feature
+  vector - see ADR 0011. `app/signals` (Phase 05) never generates an
+  order either - the same guarantee as `app/scanners`.
 
 ## Strategy Research Lab (Phase 01)
 
@@ -316,6 +357,69 @@ with session_scope(build_session_factory(engine)) as session:
     qualified = [c for c in candidates if c.qualified]
 ```
 
+## AI Context, Quant Model, Regime, Signal Engine (Phase 05)
+
+A `SignalInput` is evidence, never an order - see
+`docs/architecture/0011-ai-context-quant-regime-signal-engine.md`.
+
+```python
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from app.ai_context.claude_extractor import ClaudeContextExtractor
+from app.ai_context.extractor import ContextExtractionRequest
+from app.ai_context.schema import EventKind
+from app.core.config import get_settings
+from app.db.engine import build_engine, build_session_factory, session_scope
+from app.regime.classifier import RegimeClassifier
+from app.regime.provider import RegimeProvider
+from app.signals.engine import SignalEngine
+
+settings = get_settings()
+
+# AI Context: any LLM failure/parse failure becomes an explicit
+# `status="unknown"` result - never a guess, never a raised exception.
+extractor = ClaudeContextExtractor(
+    api_key=settings.anthropic_api_key.get_secret_value(),
+    model=settings.anthropic_model,
+)
+context_result = extractor.extract(
+    ContextExtractionRequest(
+        source="mock_news", external_id="n-1", event_kind=EventKind.NEWS,
+        event_time=datetime.now(UTC), headline_or_title="Samsung Q3 earnings beat",
+        body="...",
+    )
+)
+
+engine = build_engine(settings)
+with session_scope(build_session_factory(engine)) as session:
+    regime_provider = RegimeProvider(
+        session,
+        classifier=RegimeClassifier(
+            trend_lookback_bars=20,
+            trend_up_threshold=Decimal("0.03"),
+            trend_down_threshold=Decimal("-0.03"),
+            volatility_lookback_bars=20,
+            high_volatility_threshold=Decimal("0.02"),
+            low_volatility_threshold=Decimal("0.001"),
+            breadth_expanding_threshold=Decimal("0.6"),
+            breadth_contracting_threshold=Decimal("0.4"),
+        ),
+        benchmark_instrument_id=1, timeframe="1d", lookback_days=30,
+    )
+    signal_engine = SignalEngine(
+        session, regime_provider=regime_provider,
+        quant_model=None,  # or a loaded BaselineQuantModel (app.models.artifact.load_artifact)
+        quant_model_name="quant_baseline", quant_model_version="logreg_v1",
+        quant_feature_schema_version="1.0.0", quant_label_definition_version="fwd_return_5d_v1",
+        feature_timeframe="1d", feature_lookback_days=30,
+    )
+    signal = signal_engine.build_signal_input(
+        instrument_id=1, symbol="005930", as_of=datetime.now(UTC),
+        ai_context=[context_result],
+    )
+```
+
 ## Roadmap
 
 - **Phase 00 (done)**: project skeleton - config, logging, exceptions,
@@ -331,9 +435,14 @@ with session_scope(build_session_factory(engine)) as session:
   Event Scanner -> Strategy Scanner -> `Candidate`, reading through
   `app.db.repositories` exclusively, market-specific event rules,
   `FeatureSet`/`EventDetection`/`Candidate` interfaces for Phase 05.
-- **Phase 05+**: a first AI/quant signal model (consuming
-  `app.scanners.features.FeatureSet`), a first backtest engine
-  implementation, a paper broker implementation, and confirming the
+- **Phase 05 (done)**: AI Context (`app.ai_context`), Quant Model
+  (`app.models`), Market Regime (`app.regime`), and the Signal Engine
+  (`app.signals`) - a baseline calibrated quant model on a leakage-safe
+  dataset, a fixed/isolated LLM classification schema, and a
+  `SignalInput` combining all three, still no order generated.
+- **Phase 06+**: a first backtest engine implementation (consuming
+  `app.signals.schema.SignalInput` and/or `app.scanners.candidate.
+  Candidate`), a paper broker implementation, and confirming the
   remaining 9 Toss endpoints' response schemas - each phase should
   only need to fill in a `base.py` interface (or add a DTO/table), not
   change these boundaries.

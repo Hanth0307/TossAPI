@@ -16,7 +16,8 @@ docs/architecture/0008-data-platform.md:
   (identical `available_at`) is still idempotent (`ON CONFLICT DO
   UPDATE` touching only `ingested_at`).
 - **Plain observed-event tables** (trade_ticks, orderbook_snapshots,
-  signals, positions, account_snapshots): `event_time` (when it
+  signals, positions, account_snapshots, ai_context_annotations):
+  `event_time` (when it
   happened), `available_at` (when *we* could first have known it -
   the point-in-time cutoff every historical read filters on; see
   `app.db.repositories`), `ingested_at` (last time this row was
@@ -229,6 +230,41 @@ disclosure_events = Table(
     Column("raw_payload", JSONB, nullable=True),
     # available_at part of the natural key - see market_bars above / ADR 0009.
     UniqueConstraint("source", "external_id", "available_at"),
+)
+
+# --- AI Context annotations (Phase 05, observed-event) --------------------
+
+ai_context_annotations = Table(
+    "ai_context_annotations",
+    metadata,
+    _id(),
+    Column("source", String(32), nullable=False),
+    Column("external_id", String(128), nullable=False),
+    Column("event_kind", String(16), nullable=False),
+    Column("model_name", String(64), nullable=False),
+    Column("model_version", String(64), nullable=False),
+    *_event_columns(),
+    Column("status", String(16), nullable=False),
+    Column("event_type", String(32), nullable=False),
+    Column("impact_direction", String(16), nullable=False),
+    Column("impact_duration", String(16), nullable=False),
+    Column("novelty", String(16), nullable=False),
+    Column("duplicate_cluster_id", String(128), nullable=True),
+    Column("source_reliability", String(16), nullable=False),
+    Column("impact_horizon", JSONB, nullable=False),
+    Column("entities", JSONB, nullable=False),
+    Column("summary", Text, nullable=False),
+    Column("rationale", Text, nullable=False),
+    Column("parse_error", Text, nullable=True),
+    # A re-run of the exact same model_version against the same
+    # article is idempotent (plain upsert) - this is a derived
+    # annotation recomputed from immutable source text, not an
+    # externally correctable fact, so the append-only revision
+    # pattern (ADR 0009) would be needless complexity here. A
+    # different model_version is a different row entirely - see ADR
+    # 0011.
+    UniqueConstraint("source", "external_id", "event_kind", "model_name", "model_version"),
+    Index("ix_ai_context_annotations_lookup", "source", "external_id", "event_kind"),
 )
 
 # --- Strategy Research Lab mirror (dimension table) -----------------------
